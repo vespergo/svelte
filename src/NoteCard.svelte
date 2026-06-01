@@ -4,8 +4,14 @@
   import { doc, deleteDoc, updateDoc } from 'firebase/firestore';
 
   export let note;
+  export let selectable = false;
+  export let selected = false;
 
   const dispatch = createEventDispatcher();
+
+  function handleSelect() {
+    dispatch('select');
+  }
 
   let editing = false;
   let confirming = false;
@@ -71,6 +77,23 @@
 </script>
 
 <style>
+  .card.selected {
+    border-color: var(--primary);
+    background-color: var(--primary-light);
+  }
+
+  .select-checkbox {
+    margin-right: 0.5rem;
+    width: 18px;
+    height: 18px;
+    cursor: pointer;
+  }
+
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
   .card {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -250,7 +273,7 @@
   }
 </style>
 
-<div class="card">
+<div class="card" class:selected={selected}>
   {#if editing}
     <div class="edit-form">
       <input type="text" placeholder="Title" bind:value={editTitle} />
@@ -272,6 +295,14 @@
     </div>
   {:else}
     <div class="card-header">
+        {#if selectable}
+          <input
+            type="checkbox"
+            class="select-checkbox"
+            checked={selected}
+            on:change={handleSelect}
+          />
+        {/if}
       {#if note.title}
         <h3>{note.title}</h3>
       {/if}

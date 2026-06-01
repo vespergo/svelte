@@ -7,6 +7,8 @@
     limit,
     where,
     addDoc,
+    deleteDoc,
+    doc,
     onSnapshot,
   } from 'firebase/firestore';
   import { db } from './firebase';
@@ -15,8 +17,12 @@
   export let user;
 
   let notes = [];
+  let selectedNoteIds = new Set();
+  let deletingSelected = false;
+  let deleteError = null;
   let loading = true;
   let error = null;
+  $: hasSelection = selectedNoteIds.size > 0;
   let pageLimit = 10;
   let hasMore = false;
 
@@ -28,10 +34,13 @@
 
   let searchTerm = '';
   let viewMode = 'grid';
+  let selectMode = false;
 
   let unsubscribe;
 
   function setupListener(lim) {
+    selectedNoteIds.clear();
+    deleteError = null;
     if (unsubscribe) unsubscribe();
     loading = true;
     error = null;
@@ -78,6 +87,43 @@
       )
     : notes;
 
+  function toggleNoteSelected(noteId) {
+    const nextSelectedNoteIds = new Set(selectedNoteIds);
+    if (nextSelectedNoteIds.has(noteId)) {
+      nextSelectedNoteIds.delete(noteId);
+    } else {
+      nextSelectedNoteIds.add(noteId);
+    }
+    selectedNoteIds = nextSelectedNoteIds;
+  }
+
+  function selectAllFiltered() {
+    selectedNoteIds = new Set(filteredNotes.map((note) => note.docId));
+  }
+
+  function clearSelection() {
+    selectedNoteIds = new Set();
+  }
+
+  async function deleteSelectedNotes() {
+    if (selectedNoteIds.size === 0) return;
+
+    deletingSelected = true;
+    deleteError = null;
+    try {
+      await Promise.all(
+        Array.from(selectedNoteIds).map(id =>
+          deleteDoc(doc(db, 'notes', id))
+        )
+      );
+      selectedNoteIds = new Set();
+    } catch (e) {
+      deleteError = e.message;
+    } finally {
+      deletingSelected = false;
+    }
+  }
+
   async function addNote() {
     if (!newTitle.trim() && !newText.trim()) return;
     adding = true;
@@ -104,6 +150,21 @@
     }
   }
 
+  function formatDate(ts) {
+    if (!ts) return '';
+    return new Date(ts).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+
+  function pluralize(count, singular, plural) {
+    return count === 1 ? singular : plural;
+  }
+
   function handleTextKeydown(e) {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
       addNote();
@@ -112,6 +173,44 @@
 </script>
 
 <style>
+  .selection-toolbar {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .notes-container.select-mode {
+    --card-padding: 0.75rem;
+  }
+
+  .notes-container.select-mode :global(.card) {
+    padding: var(--card-padding);
+  }
+
+  .notes-container.select-mode :global(.card-header) {
+    align-items: center;
+  }
+
+  .notes-container.select-mode :global(h3) {
+    margin-right: 0.5rem;
+  }
+
+  .notes-container.select-mode :global(.date) {
+    margin-left: auto;
+  }
+
+  .notes-container.select-mode :global(.card-actions) {
+    margin-top: 0.5rem;
+  }
+
+  @media (max-width: 600px) {
+    .selection-toolbar {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
   .notepad {
     max-width: 1200px;
     margin: 0 auto;
@@ -339,10 +438,6 @@
     .notes-container.grid {
       grid-template-columns: 1fr;
     }
-
-    .user-name {
-      display: none;
-    }
   }
 </style>
 
@@ -378,6 +473,31 @@
   </div>
 
   <div class="toolbar">
+      {#if selectMode && filteredNotes.length > 0}
+        <div class="selection-toolbar">
+          <button
+            class="btn"
+            on:click={selectAllFiltered}
+            disabled={selectedNoteIds.size === filteredNotes.length}
+          >
+            Select all
+          </button>
+          <button
+            class="btn"
+            on:click={clearSelection}
+            disabled={selectedNoteIds.size === 0}
+          >
+            Clear
+          </button>
+          <button
+            class="btn btn-danger"
+            on:click={deleteSelectedNotes}
+            disabled={selectedNoteIds.size === 0 || deletingSelected}
+          >
+            {deletingSelected ? 'Deleting…' : `Delete selected (${selectedNoteIds.size})`}
+          </button>
+        </div>
+      {/if}
     <input
       type="search"
       class="search-input"
@@ -385,6 +505,22 @@
       bind:value={searchTerm}
     />
     <div class="view-toggle">
+          <button
+            class="view-btn"
+            class:active={!selectMode}
+            on:click={() => (selectMode = false)}
+            title="View notes"
+          >
+            📝
+          </button>
+          <button
+            class="view-btn"
+            class:active={selectMode}
+            on:click={() => (selectMode = true)}
+            title="Select notes"
+          >
+            ✅
+          </button>
       <button
         class="view-btn"
         class:active={viewMode === 'grid'}
@@ -409,8 +545,8 @@
     </p>
   {/if}
 
-  {#if error}
-    <div class="error-banner">{error}</div>
+  {#if error || deleteError}
+    <div class="error-banner">{error || deleteError}</div>
   {/if}
 
   {#if loading}
@@ -428,11 +564,18 @@
   {:else}
     <div
       class="notes-container"
-      class:grid={viewMode === 'grid'}
-      class:list={viewMode === 'list'}
+      class:grid={viewMode === 'grid' && !selectMode}
+      class:list={viewMode === 'list' && !selectMode}
+      class:select-mode={selectMode}
     >
       {#each filteredNotes as note (note.docId)}
-        <NoteCard {note} on:tagFilter={(e) => (searchTerm = e.detail)} />
+        <NoteCard
+            {note}
+            on:tagFilter={(e) => (searchTerm = e.detail)}
+            selectable={selectMode}
+            selected={selectedNoteIds.has(note.docId)}
+            on:select={() => toggleNoteSelected(note.docId)}
+          />
       {/each}
     </div>
     {#if hasMore && !searchTerm}
